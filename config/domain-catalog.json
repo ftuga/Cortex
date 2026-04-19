@@ -1,0 +1,18 @@
+{
+  "_comment": "Domain → allowed agents catalog. Edit to match your agent roster.",
+  "_comment2": "Format: domain name → list of agent names that may be routed to it.",
+  "_comment3": "Unknown agents on known domains are blocked by routing-check-hook.",
+
+  "backend": ["python-pro", "backend-architect", "backend-developer", "fullstack-developer"],
+  "frontend": ["frontend-developer", "typescript-pro", "nextjs-architecture-expert", "ui-designer"],
+  "database": ["database-architect", "sql-pro", "postgresql-dba"],
+  "security": ["security-auditor", "security-engineer", "api-security-audit", "mcp-security-auditor"],
+  "devops": ["devops-engineer", "deployment-engineer", "azure-infra-engineer"],
+  "testing": ["qa-expert", "test-automator", "test-engineer"],
+  "api_design": ["api-architect", "api-designer", "api-documenter"],
+  "review": ["code-reviewer", "architect-reviewer"],
+  "debug": ["error-detective"],
+  "ops": ["monitoring-specialist", "deployment-engineer"],
+  "product": ["product-manager", "business-analyst", "project-manager", "scrum-master"],
+  "design": ["ui-designer", "ui-ux-designer", "brand-identity-expert"]
+}

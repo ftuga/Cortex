@@ -1,0 +1,20 @@
+{
+  "name": "cortex",
+  "version": "1.0.0",
+  "description": "Cognitive loop for Claude Code agents — SPEAK compression, reflexion memory with trust gate, catalog-bounded routing",
+  "homepage": "https://github.com/ftuga/Cortex",
+  "license": "AGPL-3.0",
+  "keywords": ["claude-code", "multi-agent", "memory", "qdrant", "routing", "compression"],
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Task", "command": "hooks/routing-check.sh"}
+    ]
+  },
+  "commands": [
+    {"name": "reflexion-store", "file": "commands/reflexion-store.md"},
+    {"name": "reflexion-search", "file": "commands/reflexion-search.md"},
+    {"name": "erl-update", "file": "commands/erl-update.md"},
+    {"name": "eval-run", "file": "commands/eval-run.md"},
+    {"name": "speak", "file": "commands/speak.md"}
+  ]
+}

@@ -27,12 +27,12 @@ fi
 echo -e "  ${GREEN}✓${NC} Qdrant up at $QDRANT_URL"
 
 # 2. Copy scripts
-for f in erl.sh expel.sh reflexion.sh routing-check-hook.sh longmemeval.sh; do
-    cp "$CTX_DIR/src/$f" "$HELPERS/$f"
+for f in erl.sh expel.sh reflexion.sh routing-check.sh longmemeval.sh; do
+    cp "$CTX_DIR/hooks/$f" "$HELPERS/$f"
     chmod +x "$HELPERS/$f"
     echo -e "  ${GREEN}✓${NC} $f → $HELPERS/"
 done
-cp "$CTX_DIR/src/vector.py" "$CLAUDE_DIR/vector.py"
+cp "$CTX_DIR/hooks/vector.py" "$CLAUDE_DIR/vector.py"
 echo -e "  ${GREEN}✓${NC} vector.py → $CLAUDE_DIR/"
 
 # 3. SPEAK skill
@@ -55,12 +55,12 @@ p = Path(os.path.expanduser("~/.claude/settings.json"))
 home = os.path.expanduser("~")
 data = json.loads(p.read_text()) if p.exists() else {}
 data.setdefault("hooks", {})
-entry = {"matcher": "Agent", "hooks": [{"type":"command","command":f'bash "{home}/.claude/helpers/routing-check-hook.sh"'}]}
+entry = {"matcher": "Task", "hooks": [{"type":"command","command":f'bash "{home}/.claude/helpers/routing-check.sh"'}]}
 existing = data["hooks"].setdefault("PreToolUse", [])
-if not any("routing-check-hook" in json.dumps(e) for e in existing):
+if not any("routing-check" in json.dumps(e) for e in existing):
     existing.append(entry)
 p.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-print("  ✓ routing-check-hook registered in settings.json")
+print("  ✓ routing-check registered in settings.json")
 PYEOF
 
 # 6. Create Qdrant collection

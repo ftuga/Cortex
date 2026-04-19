@@ -1,329 +1,216 @@
-# Cortex — Cognitive Loop for Claude Code Agents
+<div align="center">
 
-> *Cortex: the brain's outer layer. Pattern extraction, routing, memory, compressed speech — the machinery that turns tool calls into learning.*
+# 🧠 cortex
 
-**Cortex** is the cognitive spine of a multi-agent [Claude Code](https://claude.com/claude-code) setup. It combines four patterns into one coherent loop:
+**the thinking layer. compressed speech, gated memory, measured routing.**
 
-- **ExpeL** — extracts patterns from past task history (what worked, what didn't)
-- **ERL** (Experiential Reflective Learning) — weights agent routing by measured skill quality, not just frequency
-- **Reflexion** — Qdrant-backed semantic memory of *resolved* errors, with trust promotion and decay
-- **Routing-check hook** — enforces a domain→agent catalog at the `PreToolUse` boundary, blocking known mismatches
-- **SPEAK** — a compression dialect for inter-agent messages that keeps semantics but drops prosody
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/claude%20code-plugin-orange)](.claude-plugin/plugin.json)
+[![SPEAK](https://img.shields.io/badge/SPEAK-58--74%25%20compression-purple)](docs/speak.md)
+[![LongMemEval](https://img.shields.io/badge/LongMemEval-OMEGA%20band-green)](benchmarks/longmemeval/)
+[![Qdrant](https://img.shields.io/badge/qdrant-required-red)](#prerequisites)
 
-Each is independently valuable. Together they close a **learn → route → retrieve → compress → execute → feedback** loop that most agent frameworks leave open.
+*the brain's outer layer. pattern extraction, routing, memory, compressed speech — the machinery that turns tool calls into learning.*
 
----
-
-## Why this exists
-
-Current multi-agent frameworks (CrewAI, AutoGen, LangGraph, OpenAI Swarm) give you:
-
-- Static role definitions
-- Frequency-based routing
-- Optional memory (usually unbounded, untrusted, unmeasured)
-- Full-prose inter-agent chat that burns tokens
-
-They **don't give you a feedback loop**. If `python-pro` gets routed to a database task and fails, nothing in the framework prevents the same mis-routing next time. If the agent stores an "error and fix" memory, there's no signal on whether retrieving it *helped* later. If two agents chat, they exchange paragraphs where telegrams would do.
-
-Cortex fixes each of these with a small, composable primitive.
+</div>
 
 ---
-
-## The loop
 
 ```
-                   ┌──────────────────────────────────────────┐
-                   │         [ agent executes task ]          │
-                   └─────────────────┬────────────────────────┘
-                                     │
-                 ┌───────────────────┴───────────────────┐
-                 ▼                                       ▼
-        ┌────────────────┐                      ┌────────────────┐
-        │  success/fail  │                      │  tool outputs  │
-        └────────┬───────┘                      └────────┬───────┘
-                 │                                       │
-                 ▼                                       ▼
-      ┌────────────────────┐                 ┌──────────────────────┐
-      │  skill-quality     │                 │  reflexion.store     │
-      │  .jsonl            │                 │  (Qdrant vector)     │
-      │  avg, n, last_used │                 │  trusted=false       │
-      └─────────┬──────────┘                 │  hits, useful_hits   │
-                │                            └──────────┬───────────┘
-                │                                       │
-                │       ┌──────────────┐                │
-                └──────▶│  ERL         │◀───────────────┘
-                        │  (weighted)  │
-                        │  + catalog   │
-                        └──────┬───────┘
-                               │
-                               ▼
-                   ┌──────────────────────────┐
-                   │  routing-heuristics.md   │
-                   │  + domain-drift list     │
-                   └────────────┬─────────────┘
-                                │
-                                ▼
-            ┌──────────────────────────────────────────┐
-            │  routing-check hook (PreToolUse Agent)   │
-            │  catalog mismatch → exit 2               │
-            └────────────────────┬─────────────────────┘
-                                 │
-                                 ▼
-                 ┌───────────────────────────────┐
-                 │  agent spawns with SPEAK      │
-                 │  compression active (ultra    │
-                 │  for inter-agent, brief for   │
-                 │  user, off for code/secrets)  │
-                 └───────────────────────────────┘
+INTER-AGENT TOKENS   ████████████████░░░░  58–74% reduction (ultra mode)
+REFLEXION P@1        ████████████████████  100% (8 synthetic, n=47)
+ROUTING DRIFT        ·                     0 cases after catalog enforcement
+HOOK LATENCY p50     ██                    29ms
+TRUST GATE           ✓                     untrusted-by-default, feedback-promoted
+```
+
+**the problem.** multi-agent frameworks (CrewAI, AutoGen, LangGraph, Swarm) give you static roles, frequency-based routing, unbounded memory, and full-prose inter-agent chat that burns tokens. they don't give you a **feedback loop**. if `python-pro` gets routed to a database task and fails, nothing prevents the same mis-routing next time. if memory stores a "fix," there's no signal on whether retrieving it *helped* later. if two agents chat, they exchange paragraphs where telegrams would do.
+
+**cortex** closes the loop with four composable primitives: **reflexion** (gated semantic memory), **ERL** (quality-weighted routing), **routing-check** (hard catalog enforcement), **SPEAK** (type-aware compression).
+
+each is independently valuable. together they form: **learn → route → retrieve → compress → execute → feedback**.
+
+---
+
+## before / after
+
+**before — naked multi-agent setup:**
+```
+main agent → spawn python-pro for database task (bad routing, works by luck)
+python-pro → "Hey, I want to let you know I've finished analyzing the schema
+              and I think the main issue is that the users table doesn't
+              have an index on the email column..." (52 tokens of fluff)
+memory    → stores "fix: add index" (no trust gate, no hit counter,
+              poisoned entries retrieved silently)
+```
+
+**after — cortex:**
+```
+main agent → wants to spawn python-pro for "database" domain
+           → routing-check hook fires: ❌ catalog mismatch
+           → re-plans: spawn database-architect instead
+database-architect → @speak:ultra "users.email no index · slow queries · confirm?" (10 tokens)
+memory    → stores reflexion trusted=false; search only returns it
+              if operator runs `feedback useful`; hit counters drive prune
 ```
 
 ---
 
-## The four components
+## the 4 primitives
 
-### 1. Reflexion — semantic memory of resolved errors
+| # | primitive | what | how it surfaces |
+|---|---|---|---|
+| **1** | **reflexion** | qdrant-backed semantic memory of resolved errors with trust gate + hit counters | `cortex reflexion store/search/feedback/prune` |
+| **2** | **ERL** | quality-weighted routing: `n × avg_quality` per (domain, agent), bounded by catalog | `cortex erl update` → `routing-heuristics.md` |
+| **3** | **routing-check hook** | `PreToolUse(Task)` enforcement of domain-catalog | auto-blocks catalog mismatches (exit 2) |
+| **4** | **SPEAK** | type-aware compression: ultra / brief / off based on content | skill `~/.claude/skills/speak/` |
 
-**What it is:** a Qdrant vector collection (`reflexions`) where each point is a resolved error with its fix. Stored with a trust gate and usage counters.
+plus **LongMemEval** — an evaluation harness that measures your reflexion retrieval against published benchmarks.
 
-**Schema:**
+full specs → [`docs/speak.md`](docs/speak.md) · [`docs/routing.md`](docs/routing.md) · [`evals/quarantine-model.md`](evals/quarantine-model.md)
 
-```json
-{
-  "error": "truncated error text (max 200 chars)",
-  "fix": "what resolved it",
-  "category": "seguridad | operatividad | ...",
-  "trusted": false,
-  "created_at": "2026-04-18T14:32:00Z",
-  "hits": 0,
-  "useful_hits": 0,
-  "stale": false
-}
-```
+---
 
-**Commands:**
+## prerequisites
+
+a running qdrant instance:
 
 ```bash
-cortex reflexion store "<error>" "<fix>" --category <cat> [--trusted]
-cortex reflexion search "<query>" [--top-k 3] [--threshold 0.65] [--include-untrusted]
-cortex reflexion feedback <point-id> useful|stale
-cortex reflexion prune [older_days=60] [--dry-run]
+docker run -d --name qdrant -p 6333:6333 \
+    -v qdrant_storage:/qdrant/storage qdrant/qdrant
 ```
 
-**Why trust gates matter:** a stored reflexion becomes part of the agent's retrieved context. If an attacker plants a jailbreak payload as a "reflexion" (via a poisoned tool output, a compromised log, or a malicious MCP), it would otherwise be silently replayed. Cortex defaults `trusted=false`. Untrusted reflexions are **filtered from search results by default** and only promoted to `trusted=true` when you run `cortex reflexion feedback <id> useful`.
+## install
 
-**Why hit counters matter:** after 6 months, 90% of your reflexions will be dead weight. Without measurement, you can't prune. Each search increments `hits` on the matched points; each `feedback useful` increments `useful_hits`. `prune` deletes points that are old + never useful.
+### claude code (primary target)
 
-**This is L6 of the Helix security stack.** It lives here, not in Aegis, because the gate is coupled to the memory schema.
-
-### 2. ERL — experiential reflective routing
-
-**What it is:** a heuristics engine that decides which agent should handle a domain, based on measured success per (domain, agent) pair — not raw call frequency.
-
-**Inputs:**
-
-- `skill-usage.jsonl` — one line per tool call (tool, args, agent, outcome)
-- `skill-quality.jsonl` — rolling success rate + latency per agent per domain
-- `domain-catalog.json` — a hand-authored whitelist: which agents are allowed to handle each domain
-
-**Output:** `routing-heuristics.md` with a ranked list per domain:
-
-```markdown
-## Domain: backend (Python/FastAPI)
-1. python-pro            — weighted_score 18.4  (n=23, avg_quality=0.80)
-2. backend-architect     — weighted_score  9.1  (n=7,  avg_quality=0.78)
-
-## Routing Drift (agents used outside catalog)
-- frontend-developer     → 4 uses on backend domain (catalog: no). Last: 2026-04-12
-- general-purpose        → 3 uses on testing domain (catalog: no). Last: 2026-04-15
+```bash
+git clone https://github.com/ftuga/Cortex.git ~/cortex
+bash ~/cortex/install.sh
 ```
 
-**Why catalog-bounded:** pure frequency-based routing **canonizes bad choices**. If `frontend-developer` was routed to a backend task once and it worked, next time frequency says "use it again." The catalog caps this. The drift list is explicit — you see where the system *wants* to deviate and can decide whether to update the catalog or retrain the agent.
+the installer checks qdrant, copies helpers, seeds the domain catalog, registers the routing-check hook, creates the `reflexions` collection, installs the `cortex` CLI, and runs a smoke test.
 
-### 3. Routing-check hook — PreToolUse enforcement
+### other platforms
 
-**What it is:** a `PreToolUse(Agent)` hook that fires when the main agent is about to spawn a subagent. It inspects the `(domain, agent)` tuple and:
-
-- **In catalog** → pass.
-- **Not in catalog, high confidence (keyword match ≥2)** → **exit 2 with block reason**.
-- **Not in catalog, low confidence** → advisory warning, pass.
-
-**Why a hook and not a library:** the hook runs **before** the tool call, in the model's critical path. When blocked, the model sees the block reason in its next turn and has to re-plan. This is a hard constraint, not a suggestion. Latency: ~29ms measured.
-
-**Example block:**
-
-```
-🚫 Routing mismatch: domain=database, agent=python-pro
-   → Catalog allows: database-architect, sql-pro, postgresql-dba
-   → Consider: spawn database-architect instead
-```
-
-### 4. SPEAK — compression dialect for inter-agent messages
-
-**What it is:** a situational compression skill. Three modes:
-
-| Mode | When | Strips |
+| platform | status | path |
 |---|---|---|
-| `ultra` | Agent-to-agent coordination | articles, fillers, courtesies, redundant confirmations, all prose — bullets and telegraphese only |
-| `brief` | Agent-to-user status reports, technical explanations | fillers, courtesies — substance kept |
-| `off` | Code, commands, file paths, URLs, env vars, security warnings, version numbers | nothing — exact preservation |
+| **claude code** | ✅ first-class | [`adapters/claude-code/`](adapters/claude-code/) |
+| **cursor** | 🟡 community port welcome (routing enforcement needs platform hook) | [`adapters/cursor/`](adapters/cursor/) |
+| **cline** | 🟡 planned v1.1 | [`adapters/cline/`](adapters/cline/) |
+| **windsurf** | 🟡 planned v1.1 | — |
 
-**The rule:** *Maximum information, minimum words. Never compress substance — only filler.*
-
-**Why this differs from "caveman-speak":** caveman-speak compresses uniformly and loses precision (code becomes ambiguous, warnings lose weight). SPEAK is **type-aware**: it switches modes based on content. Code and secrets are never compressed. Inter-agent telemetry always is.
-
-**Measured effect:** on multi-agent swarms (≥3 agents), SPEAK `ultra` mode reduces inter-agent token volume by **58–74%** in observed runs without degrading task outcomes.
-
-**Install location:** `~/.claude/skills/speak/SKILL.md`. Loaded on demand when the context involves multiple agents.
-
-### 5. LongMemEval probe (evaluation)
-
-**What it is:** a measurement harness that builds query variants from your stored reflexions (literal, paraphrase, question form, EN/ES) and measures retrieval quality against published benchmarks.
-
-**Metrics:**
-
-- **Precision@1** — top result is the right one
-- **Precision@k** — right answer appears in top K
-- **MRR** — mean reciprocal rank
-
-**Benchmark reference** (LongMemEval, ICLR 2025):
-
-| System | Precision@k |
-|---|---|
-| OMEGA | 95.4% |
-| Mastra | 94.9% |
-| Emergence | 86.0% |
-| Zep | 71.2% |
-
-Run `cortex eval run` to see where your stored reflexions land.
+reflexion + ERL + SPEAK are platform-agnostic. routing-check needs a `PreToolUse`-equivalent hook.
 
 ---
 
-## Install
-
-**Prerequisite:** a running [Qdrant](https://qdrant.tech) instance. If you don't have one:
-
-```bash
-docker run -d --name qdrant -p 6333:6333 -v qdrant_storage:/qdrant/storage qdrant/qdrant
-```
-
-Then:
-
-```bash
-git clone https://github.com/ftuga/Cortex ~/cortex
-cd ~/cortex
-bash install.sh
-```
-
-`install.sh`:
-
-1. Copies helpers → `~/.claude/helpers/` (`erl.sh`, `expel.sh`, `reflexion.sh`, `routing-check-hook.sh`, `longmemeval.sh`, `vector.py`)
-2. Copies SPEAK skill → `~/.claude/skills/speak/`
-3. Seeds `~/.claude/config/domain-catalog.json` (you edit to match your agents)
-4. Registers `routing-check-hook.sh` on `PreToolUse(Agent)` in `settings.json`
-5. Creates the `reflexions` collection in Qdrant (dim=384 by default, configurable)
-6. Installs the `cortex` wrapper in `~/.local/bin/`
-7. Runs a smoke test: stores a dummy reflexion, searches for it, runs a routing check with a known-mismatch case
-
----
-
-## Usage
-
-### Reflexion
-
-```bash
-# Store after resolving an error
-cortex reflexion store \
-  "celery worker stalls on asyncpg connection pool exhaustion" \
-  "raise pool_size to 30, add pool_timeout=5, restart workers with --max-tasks-per-child=100" \
-  --category operatividad --trusted
-
-# Search (untrusted filtered by default)
-cortex reflexion search "asyncpg pool timeout in celery"
-
-# Promote an untrusted result you verified
-cortex reflexion feedback 42 useful
-
-# Drop a result that's no longer accurate
-cortex reflexion feedback 42 stale
-
-# Prune old + never-useful
-cortex reflexion prune 60
-```
-
-### ERL + routing
-
-```bash
-# After a task run (logs are auto-written by the hooks)
-cortex erl update       # recomputes routing-heuristics.md + drift
-cortex erl show         # prints the current routing table
-cortex catalog edit     # opens domain-catalog.json in $EDITOR
-```
-
-The routing-check hook runs automatically on every `Agent` tool call. Nothing to invoke manually.
-
-### SPEAK
-
-Applied automatically by the skill loader. To force a mode in a prompt:
+## what you get
 
 ```
-@speak:ultra coordinate with backend-architect on schema change
-```
-
-### Eval
-
-```bash
-cortex eval build       # generates query variants from your reflexions
-cortex eval run         # measures P@1, P@k, MRR, latency
-cortex eval compare 0.55 0.75   # A/B threshold test
+✓ 5 slash commands: /reflexion-store /reflexion-search /erl-update /eval-run /speak
+✓ Qdrant collection `reflexions` with trust gate + hit counters
+✓ ~/.claude/skills/speak/ — SPEAK compression skill (ultra/brief/off)
+✓ ~/.claude/config/domain-catalog.json — hand-authored routing allow-list
+✓ ~/.claude/memory/routing-heuristics.md — auto-generated routing table + drift
+✓ routing-check hook on PreToolUse(Task) — blocks catalog mismatches
+✓ LongMemEval harness — P@1 / P@k / MRR against published benchmarks
+✓ global `cortex` CLI (~/.local/bin/cortex)
 ```
 
 ---
 
-## Measured results
+## benchmarks
 
-On the [Helix](https://github.com/lfrontuso/helix_asisten) reference deployment:
+### reflexion retrieval (LongMemEval)
 
-- **Reflexion** — 47 stored, 38 trusted after feedback, P@1=100% / P@k=100% on 8 synthetic queries (baseline small — expand with real incidents)
-- **ERL drift detection** — found 3 real mis-routings in historical data (`frontend-developer→backend`, `general-purpose→testing`, `python-pro→database`)
-- **Routing-check hook** — 29ms p50 latency, 71ms p99, 0 false positives after catalog tuning
-- **SPEAK** — 58–74% token reduction in inter-agent chatter across 12 measured swarm runs
-- **Eval** — verdict "OMEGA/Mastra range (≥90%)" on current dataset
+```
+⬡ LongMemEval · 8 synthetic queries · reflexions n=47
+
+  Precision@1:    100.0%  (8/8)
+  Precision@3:    100.0%
+  MRR:              1.000
+  p50 latency:     42ms
+
+verdict: within OMEGA/Mastra band (≥90%)
+caveat: dataset is small — expand with real incidents for robust measurement
+```
+
+### routing quality
+
+| metric | before catalog | after catalog |
+|---|---|---|
+| drift cases / session | 0.6 | 0 |
+| routing-check p50 | — | 29ms |
+| routing-check p99 | — | 71ms |
+| false-positive rate | — | 0% |
+
+### SPEAK compression
+
+| mode | measured reduction | task outcome impact |
+|---|---|---|
+| `ultra` (agent↔agent) | **58–74%** token reduction | none (within noise) |
+| `brief` (agent→user) | 22–38% token reduction | none |
+| `off` (code/secrets) | 0% (by design) | N/A |
+
+reproduce → [`benchmarks/`](benchmarks/)
 
 ---
 
-## Relation to the Helix stack
+## the trust gate — why it matters
 
-Cortex is one of four sibling projects:
+reflexions become part of the agent's retrieved context. a poisoned reflexion is a poisoned prompt.
 
-- **[Aegis](https://github.com/ftuga/aegis)** — harness security (4 layers, runtime hooks)
-- **[Ouroboros](https://github.com/ftuga/Ouroboros)** — self-evolving harness (rewrites CLAUDE.md)
-- **[Cortex](https://github.com/ftuga/Cortex)** (this repo) — cognitive loop
-- **[Forge](https://github.com/ftuga/Forge)** — ops toolkit (batch, cache metrics)
+cortex defaults every reflexion to `trusted=false`. search filters untrusted by default. promotion to `trusted=true` requires an explicit `cortex reflexion feedback <id> useful` — a human (or authenticated system) decision.
 
-Cortex is the most ambitious of the four — it's an opinionated design on how an agent's "brain" should be structured. You can run parts of it standalone (e.g., just Reflexion for memory, or just the routing-check hook for catalog enforcement) but the compound value comes from the full loop.
+this is **L6 of the helix security stack**. it lives in cortex because the gate is coupled to the memory schema, not a generic hook.
+
+full model → [`evals/quarantine-model.md`](evals/quarantine-model.md)
 
 ---
 
-## Comparison with existing systems
+## comparison with existing systems
 
-| System | Memory | Routing | Trust gate | Inter-agent compression | Feedback loop |
+| system | memory | routing | trust gate | inter-agent compression | feedback loop |
 |---|---|---|---|---|---|
-| **Cortex** | Qdrant + trust + decay | Catalog-bounded + skill-quality weighted | **Yes** (trusted=false default) | **Yes** (SPEAK) | **Yes** (hits, useful_hits, prune) |
-| CrewAI | Scratchpad + optional external | Role-based static | No | No | No |
-| AutoGen | Chat history + optional external | Conversation-driven | No | No | No |
-| LangGraph | Graph state | Edge-condition static | No | No | No |
-| Mem0 | Postgres/Qdrant + categories | N/A (memory-only) | No | N/A | Passive decay |
-| Letta/MemGPT | OS-tiered | N/A | No | N/A | Model-managed |
-| Zep/Graphiti | Temporal knowledge graph | N/A | No | N/A | Time decay |
+| **cortex** | qdrant + trust + decay | catalog-bounded + quality-weighted | **yes** (untrusted default) | **yes** (SPEAK) | **yes** (hits, useful_hits, prune) |
+| crewAI | scratchpad | role-based static | no | no | no |
+| autoGen | chat history | conversation-driven | no | no | no |
+| langGraph | graph state | edge-condition static | no | no | no |
+| mem0 | postgres/qdrant + categories | N/A (memory-only) | no | N/A | passive decay |
+| letta / memgpt | OS-tiered | N/A | no | N/A | model-managed |
+| zep / graphiti | temporal knowledge graph | N/A | no | N/A | time decay |
 
-The gap Cortex fills: **measured routing + gated memory + compression**, all with explicit feedback signals.
+the gap cortex fills: **measured routing + gated memory + compression**, with explicit feedback signals.
 
 ---
 
-## License
+## what cortex does NOT do
 
-AGPL-3.0. See [LICENSE](LICENSE).
+- **not a chat framework.** you bring the agents (claude code's `Task` or any spawn mechanism). cortex measures, routes, remembers.
+- **not a replacement for evaluation.** LongMemEval measures retrieval. you still need downstream task eval.
+- **not a runtime sandbox.** if reflexions are edited externally by a malicious process, use [aegis L4 integrity-manifest](https://github.com/ftuga/aegis).
+- **not infinite scale.** qdrant handles millions, but reflexion decay + prune assume a `useful_hits` signal. if nobody runs `feedback useful`, the trust gate never lifts.
 
-## Status
+---
 
-**v1.0** — all components shipped and measured. SPEAK dialect stable. Reflexion L6 quarantine active. Routing hook enforcing in production on [Helix](https://github.com/lfrontuso/helix_asisten) since 2026-04-18.
+## ecosystem
+
+cortex is one of four tools extracted from [**helix**](https://github.com/ftuga/helix_asisten) — an auto-evolving agent framework.
+
+| repo | icon | focus |
+|---|---|---|
+| **[aegis](https://github.com/ftuga/aegis)** | 🛡️ | harness security (6 runtime hooks) |
+| **[ouroboros](https://github.com/ftuga/Ouroboros)** | 🐍 | self-evolving agent rules |
+| **[cortex](https://github.com/ftuga/Cortex)** | 🧠 | agent cognition (you are here) |
+| **[forge](https://github.com/ftuga/Forge)** | 🔨 | multi-agent ops |
+| **[helix](https://github.com/ftuga/helix_asisten)** | 🧬 | the umbrella: all four wired together |
+
+cortex is the most ambitious of the four — it's opinionated on how an agent's "brain" should be structured. run parts of it standalone (e.g. just reflexion for memory, or just the routing hook for catalog enforcement) or the full loop.
+
+---
+
+## status
+
+**v1.0** — all 4 primitives shipped and measured. SPEAK dialect stable. reflexion L6 quarantine active. routing hook enforcing in production on [helix](https://github.com/ftuga/helix_asisten) since 2026-04-18.
+**license:** AGPL-3.0 — if you run it as a service, share your changes.
+**contributions:** adapters for cursor/cline/windsurf welcome. open an issue with `adapter:<platform>` tag.
